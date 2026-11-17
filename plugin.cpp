@@ -178,62 +178,87 @@ string plugin_triggers(PLUGIN_HANDLE handle)
  *				false otherwise.
  */
 bool plugin_eval(PLUGIN_HANDLE handle,
-		 const string& assetValues)
+                 const string& assetValues)
 {
-	rapidjson::Document doc;
-	doc.Parse(assetValues.c_str());
-	if (doc.HasParseError())
-	{
-		return false;
-	}
+    rapidjson::Document doc;
+    doc.Parse(assetValues.c_str());
 
-	bool eval = false;
-	DeltaRule *rule = (DeltaRule *)handle;
-	map<std::string, RuleTrigger *>& triggers = rule->getTriggers();
+    if (doc.HasParseError())
+    {
+        return false;
+    }
 
-	// Iterate throgh all configured assets
-	// If we have multiple asset the evaluation result is
-	// TRUE only if all assets checks returned true
-	for (auto t = triggers.begin(); t != triggers.end(); ++t)
-	{
-		string assetName = t->first;
-		string assetTimestamp = "timestamp_" + assetName;
-		if (doc.HasMember(assetName.c_str()))
-		{
-			// Get all datapoints for assetName
-			const rapidjson::Value& assetValue = doc[assetName.c_str()];
+    bool eval = false;
+    bool monitoredDatapointFound = false;
 
-			for (rapidjson::Value::ConstMemberIterator itr = assetValue.MemberBegin();
-					    itr != assetValue.MemberEnd(); ++itr)
-			{
-				if(rule->chosenDatapoint(itr->name.GetString()))
-				{
-					eval |= rule->evaluate(assetName, itr->name.GetString(), itr->value);
-				}
+    DeltaRule *rule = (DeltaRule *)handle;
+    map<std::string, RuleTrigger *>& triggers = rule->getTriggers();
 
-			}
+    // Iterate through all configured assets
+    for (auto t = triggers.begin(); t != triggers.end(); ++t)
+    {
+        string assetName = t->first;
+        string assetTimestamp = "timestamp_" + assetName;
 
-			if(!eval)
-			{
-				rule->setJsonActionObject("");
-			}
-			// Add evalution timestamp
-			if (doc.HasMember(assetTimestamp.c_str()))
-			{
-				const rapidjson::Value& assetTime = doc[assetTimestamp.c_str()];
-				double timestamp = assetTime.GetDouble();
-				rule->setEvalTimestamp(timestamp);
-			}
-		}
-	}
+        if (doc.HasMember(assetName.c_str()))
+        {
+            const rapidjson::Value& assetValue =
+                doc[assetName.c_str()];
 
-	// Set final state: true is any calls to evalaute() returned true
-	rule->setState(eval);
+            bool assetDatapointFound = false;
 
-	// Logger::getLogger()->debug("assetValues %s, eval: %d", assetValues.c_str(), eval);
+            for (rapidjson::Value::ConstMemberIterator itr =
+                     assetValue.MemberBegin();
+                 itr != assetValue.MemberEnd(); ++itr)
+            {
+                if (rule->chosenDatapoint(itr->name.GetString()))
+                {
+                    monitoredDatapointFound = true;
+                    assetDatapointFound = true;
 
-	return eval;
+                    eval |= rule->evaluate(
+                        assetName,
+                        itr->name.GetString(),
+                        itr->value
+                    );
+                }
+            }
+
+            // Update timestamp only when a configured datapoint
+            // was present in this reading.
+            if (assetDatapointFound &&
+                doc.HasMember(assetTimestamp.c_str()))
+            {
+                const rapidjson::Value& assetTime =
+                    doc[assetTimestamp.c_str()];
+
+                double timestamp = assetTime.GetDouble();
+                rule->setEvalTimestamp(timestamp);
+            }
+        }
+    }
+
+    // No configured datapoint was received.
+    // Preserve the previous notification state.
+    if (!monitoredDatapointFound)
+    {
+        BuiltinRule::TriggerInfo info;
+        rule->getFullState(info);
+
+        return info.getState() == BuiltinRule::StateTriggered;
+    }
+
+    // A configured datapoint was evaluated.
+    if (!eval)
+    {
+        rule->setJsonActionObject("");
+    }
+
+    rule->setState(eval);
+
+    return eval;
 }
+
 
 /**
  * Return rule trigger reason: trigger or clear the notification.
